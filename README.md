@@ -163,6 +163,22 @@ client.js  —— Client 半边：面板、侧边栏标记、右键菜单色板�
 
 改完客户端代码要在 GUI 里 `Ctrl+R`，改完 Host 代码需要重载插件。
 
+### 发版约定
+
+每次改动插件后同步到本仓库，流程固定三步：
+
+```bash
+# 1. 升版本（语义化：新功能 minor，修 bug patch）
+#    改 package.json 的 version + README 对应段落
+# 2. 提交并推送
+git add -A && git commit -m "feat: ..." && git push origin main
+# 3. 打 tag 触发 Actions（自动打包 + 发 Release）
+git tag -a v<version> -m "dsh-session-links <version>" && git push origin v<version>
+```
+
+`.github/workflows/release.yml` 会在 tag 推送后做语法检查、打 zip、创建 Release；
+`.github/workflows/` 目录只能由仓库所有者在网页端修改（OAuth App 缺少 `workflow` scope 时会被拒绝推送）。
+
 ## License
 
 MIT
