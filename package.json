@@ -1,0 +1,51 @@
+{
+  "name": "dsh-session-links",
+  "version": "1.0.0",
+  "description": "DeepSeek Harness 插件：把多个会话连接成协作小组 —— 消息同步、组内投票、小组长、会话颜色、上下文节能",
+  "type": "module",
+  "license": "MIT",
+  "author": "Benzalkonium chloride",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis-plugin",
+    "session",
+    "multi-agent",
+    "collaboration"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NCT-Ant/dsh-session-links.git"
+  },
+  "homepage": "https://github.com/NCT-Ant/dsh-session-links#readme",
+  "bugs": {
+    "url": "https://github.com/NCT-Ant/dsh-session-links/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
