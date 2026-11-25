@@ -826,12 +826,14 @@ export function apply(ctx) {
   function pruneGroups() {
     if (!known || known.size === 0) return state.groups
     let changed = false
+    const dropped = []
     const next = []
     for (const group of state.groups) {
       const alive = group.sessions.filter((id) => known.has(id))
       if (alive.length !== group.sessions.length) changed = true
       if (alive.length < 2) {
         changed = true
+        dropped.push(group)
         continue
       }
       group.sessions = alive
@@ -844,6 +846,8 @@ export function apply(ctx) {
     if (changed) {
       state.groups = next
       scheduleSave()
+      const linked = new Set(state.groups.flatMap((item) => item.sessions))
+      for (const group of dropped) gcGroup(group, Array.from(linked))
     }
     return state.groups
   }
@@ -898,22 +902,136 @@ export function apply(ctx) {
   function disconnect(sessionId) {
     if (typeof sessionId !== 'string' || !sessionId) return { ok: false, error: '缺少会话 id' }
     let changed = false
+    const dropped = []
     state.groups = state.groups.filter((group) => {
       if (!group.sessions.includes(sessionId)) return true
       changed = true
       group.sessions = group.sessions.filter((id) => id !== sessionId)
       if (group.leader === sessionId) group.leader = null
-      return group.sessions.length >= 2
+      if (group.sessions.length < 2) {
+        dropped.push(group)
+        return false
+      }
+      return true
     })
-    if (changed) scheduleSave()
-    return { ok: true, groups: state.groups }
+    let freed = null
+    if (changed) {
+      scheduleSave()
+      const linked = new Set(state.groups.flatMap((item) => item.sessions))
+      for (const group of dropped) {
+        const part = gcGroup(group, Array.from(linked))
+        freed = freed || { recent: 0, votes: 0, dedupe: 0, pending: 0 }
+        freed.recent += part.recent
+        freed.votes += part.votes
+        freed.dedupe += part.dedupe
+        freed.pending += part.pending
+      }
+      if (!linked.has(sessionId)) {
+        const part = gcGroup({ id: '', sessions: [sessionId] }, Array.from(linked))
+        freed = freed || { recent: 0, votes: 0, dedupe: 0, pending: 0 }
+        freed.recent += part.recent
+        freed.dedupe += part.dedupe
+        freed.pending += part.pending
+      }
+    }
+    return { ok: true, groups: state.groups, freed, cache: cacheSummary() }
+  }
+
+  // ---------- 冗余数据回收 ----------
+
+  /**
+   * 清理与某个连接组绑定的运行时缓存。
+   * 会话若仍属于其他组则保留其缓存；否则一并丢弃。
+   */
+  function gcGroup(group, keepSessionIds) {
+    const owned = group ? group.sessions.filter((id) => !(keepSessionIds || []).includes(id)) : []
+    const freed = { recent: 0, votes: 0, dedupe: 0, pending: 0 }
+    for (const sessionId of owned) {
+      const entries = recent.get(sessionId)
+      if (entries && entries.length) {
+        freed.recent += entries.length
+        recent.delete(sessionId)
+      }
+      const queued = pendingDeliveries.get(sessionId)
+      if (queued && queued.length) {
+        freed.pending += queued.length
+        pendingDeliveries.delete(sessionId)
+      }
+      for (const key of Array.from(relaySeen.keys())) {
+        const cut = key.indexOf('\u0000')
+        const owner = cut > 0 ? key.slice(0, cut) : key
+        if (owner === sessionId) {
+          relaySeen.delete(key)
+          freed.dedupe += 1
+        }
+      }
+    }
+    if (group) {
+      const before = votes.length
+      for (let index = votes.length - 1; index >= 0; index -= 1) {
+        if (votes[index].groupId === group.id) votes.splice(index, 1)
+      }
+      freed.votes = before - votes.length
+    }
+    return freed
+  }
+
+  function cacheSummary() {
+    let recentEntries = 0
+    for (const entries of recent.values()) recentEntries += entries.length
+    let pendingItems = 0
+    for (const items of pendingDeliveries.values()) pendingItems += items.length
+    return {
+      recentSessions: recent.size,
+      recentEntries,
+      votes: votes.length,
+      dedupeKeys: relaySeen.size,
+      pendingSessions: pendingDeliveries.size,
+      pendingItems,
+    }
   }
 
   function dissolve(groupId) {
-    const before = state.groups.length
-    state.groups = state.groups.filter((group) => group.id !== groupId)
-    if (state.groups.length !== before) scheduleSave()
-    return { ok: true, groups: state.groups }
+    const group = state.groups.find((item) => item.id === groupId)
+    if (!group) return { ok: false, error: '连接组不存在（可能已被解散）' }
+    state.groups = state.groups.filter((item) => item.id !== groupId)
+    scheduleSave()
+    const stillLinked = new Set(state.groups.flatMap((item) => item.sessions))
+    const freed = gcGroup(group, Array.from(stillLinked))
+    return { ok: true, groups: state.groups, freed, cache: cacheSummary() }
+  }
+
+  /** 清理所有已解散组的孤儿缓存（成员都不在任何组里）。 */
+  function gcOrphans() {
+    const linked = new Set(state.groups.flatMap((item) => item.sessions))
+    const freed = { recent: 0, votes: 0, dedupe: 0, pending: 0 }
+    for (const sessionId of Array.from(recent.keys())) {
+      if (linked.has(sessionId)) continue
+      const entries = recent.get(sessionId)
+      freed.recent += entries ? entries.length : 0
+      recent.delete(sessionId)
+    }
+    for (const sessionId of Array.from(pendingDeliveries.keys())) {
+      if (linked.has(sessionId)) continue
+      const items = pendingDeliveries.get(sessionId)
+      freed.pending += items ? items.length : 0
+      pendingDeliveries.delete(sessionId)
+    }
+    for (const key of Array.from(relaySeen.keys())) {
+      const cut = key.indexOf('\u0000')
+      const sessionId = cut > 0 ? key.slice(0, cut) : key
+      if (linked.has(sessionId)) continue
+      relaySeen.delete(key)
+      freed.dedupe += 1
+    }
+    const liveGroupIds = new Set(state.groups.map((item) => item.id))
+    const before = votes.length
+    for (let index = votes.length - 1; index >= 0; index -= 1) {
+      if (!liveGroupIds.has(votes[index].groupId)) votes.splice(index, 1)
+    }
+    freed.votes = before - votes.length
+    const total = freed.recent + freed.votes + freed.dedupe + freed.pending
+    return { ok: true, freed, total, cache: cacheSummary() }
   }
 
   function rename(groupId, name) {
@@ -972,6 +1090,7 @@ export function apply(ctx) {
           colors: state.colors,
           options: state.options,
           stats: publicStats(),
+          cache: cacheSummary(),
         })
         return
       }
@@ -1004,6 +1123,10 @@ export function apply(ctx) {
       }
       if (route === 'dissolve') {
         sendJson(res, 200, dissolve(body.groupId))
+        return
+      }
+      if (route === 'gc') {
+        sendJson(res, 200, gcOrphans())
         return
       }
       if (route === 'rename') {

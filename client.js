@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
     // ---------------- store ----------------
 
     const store = {
-      snapshot: { groups: [], sessions: [], votes: [], colors: {}, options: null, stats: null, ready: false },
+      snapshot: { groups: [], sessions: [], votes: [], colors: {}, options: null, stats: null, cache: null, ready: false },
       listeners: new Set(),
       timer: null,
       picker: { open: false, sessionId: null, x: 0, y: 0 },
@@ -44,6 +44,7 @@ window.__ModuleLoader__.load({
             colors: stateValue.colors && typeof stateValue.colors === 'object' ? stateValue.colors : store.snapshot.colors,
             options: stateValue.options && typeof stateValue.options === 'object' ? stateValue.options : store.snapshot.options,
             stats: stateValue.stats && typeof stateValue.stats === 'object' ? stateValue.stats : store.snapshot.stats,
+            cache: stateValue.cache && typeof stateValue.cache === 'object' ? stateValue.cache : store.snapshot.cache,
             ready: true,
           }
           store.notify()
@@ -423,6 +424,7 @@ window.__ModuleLoader__.load({
       const dragRef = React.useRef(null)
       const options = snap.options || { compact: true, maxChars: 1200, dedupeMs: 8000, quiet: true }
       const stats = snap.stats || null
+      const cache = snap.cache || null
       const [maxCharsText, setMaxCharsText] = React.useState(String(options.maxChars))
       const [query, setQuery] = React.useState('')
       React.useEffect(() => {
@@ -449,6 +451,24 @@ window.__ModuleLoader__.load({
         }
         if (Math.round(value) === options.maxChars) return
         void saveOptions({ maxChars: Math.round(value) })
+      }
+
+      async function cleanupCache() {
+        let result
+        try {
+          result = await post('gc', {})
+        } catch {
+          store.patchPanel({ message: '清理缓存失败' })
+          return
+        }
+        const total = result && typeof result.total === 'number' ? result.total : 0
+        store.patchPanel({
+          message: total > 0
+            ? '已清理 ' + total + ' 项缓存（消息 ' + result.freed.recent + ' · 投票 ' + result.freed.votes +
+              ' · 去重 ' + result.freed.dedupe + ' · 待重投 ' + result.freed.pending + '）'
+            : '没有需要清理的缓存',
+        })
+        await store.refresh()
       }
 
       const editing = panel.editingGroupId
@@ -547,8 +567,23 @@ window.__ModuleLoader__.load({
 
       async function dissolve(groupId) {
         store.patchPanel({ busy: true })
-        await post('dissolve', { groupId })
-        const patch = { busy: false, message: '已解散连接组' }
+        let result = null
+        try {
+          result = await post('dissolve', { groupId })
+        } catch {
+          store.patchPanel({ busy: false, message: '解散失败，请稍后再试' })
+          return
+        }
+        if (result && result.ok === false) {
+          store.patchPanel({ busy: false, message: result.error || '解散失败' })
+          return
+        }
+        const freed = result && result.freed ? result.freed : null
+        const total = freed ? freed.recent + freed.votes + freed.dedupe + freed.pending : 0
+        const patch = {
+          busy: false,
+          message: total > 0 ? '已解散连接组，顺手清理了 ' + total + ' 项冗余缓存' : '已解散连接组',
+        }
         if (panel.editingGroupId === groupId) {
           patch.editingGroupId = null
           patch.selected = []
@@ -892,6 +927,46 @@ window.__ModuleLoader__.load({
                   { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.6 } },
                   '已转发 ' + stats.relays + ' 条 · 投递 ' + stats.chars + ' 字（原文 ' + stats.rawChars +
                     ' 字，省下 ' + stats.savedPercent + '%）· 跳过重复 ' + stats.skipped + ' 条',
+                )
+              : null,
+            cache
+              ? h(
+                  'div',
+                  {
+                    style: {
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      marginTop: 6,
+                      fontSize: 11,
+                      color: 'var(--dsw-alias-label-secondary)',
+                    },
+                  },
+                  h(
+                    'span',
+                    null,
+                    '运行时缓存：消息 ' + cache.recentEntries + ' 条 · 投票 ' + cache.votes +
+                      ' 条 · 待重投 ' + cache.pendingItems + ' 项',
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      title: '清理已解散组留下的缓存（解散/移出时也会自动清理）',
+                      style: {
+                        border: '1px solid var(--dsw-alias-border-l1)',
+                        background: 'transparent',
+                        color: 'var(--dsw-alias-label-primary)',
+                        borderRadius: 6,
+                        fontSize: 11,
+                        padding: '2px 8px',
+                        cursor: 'pointer',
+                      },
+                      onClick: () => void cleanupCache(),
+                    },
+                    '清理缓存',
+                  ),
                 )
               : null,
           ),
