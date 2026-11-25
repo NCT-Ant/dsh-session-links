@@ -41,13 +41,17 @@ export function apply(ctx) {
     }
   }
 
-  const state = { groups: [], colors: {}, options: { compact: true, maxChars: 1200, dedupeMs: 8000 } }
+  const state = {
+    groups: [],
+    colors: {},
+    options: { compact: true, maxChars: 1200, dedupeMs: 8000, quiet: true },
+  }
   const stats = { relays: 0, chars: 0, rawChars: 0, skipped: 0 }
   let loaded = null
   let saveTimer = null
 
   const COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/
-  const DEFAULTS = { compact: true, maxChars: 1200, dedupeMs: 8000 }
+  const DEFAULTS = { compact: true, maxChars: 1200, dedupeMs: 8000, quiet: true }
 
   const storeFile = (() => {
     const dir = process.env.DSH_PROFILE_DIR || path.join(os.homedir(), '.dsh')
@@ -60,6 +64,7 @@ export function apply(ctx) {
     const dedupeMs = Number(source.dedupeMs)
     return {
       compact: typeof source.compact === 'boolean' ? source.compact : DEFAULTS.compact,
+      quiet: typeof source.quiet === 'boolean' ? source.quiet : DEFAULTS.quiet,
       maxChars: Number.isFinite(maxChars) ? Math.min(8000, Math.max(200, Math.round(maxChars))) : DEFAULTS.maxChars,
       dedupeMs: Number.isFinite(dedupeMs) ? Math.min(120000, Math.max(0, Math.round(dedupeMs))) : DEFAULTS.dedupeMs,
     }
@@ -394,8 +399,17 @@ export function apply(ctx) {
       : '【相连会话「' + name + '」同步过来的消息】\n'
     const notes = []
     if (truncated > 0) notes.push('已省略 ' + truncated + ' 字')
-    if (state.options.compact) {
-      notes.push('全文用 session_links action=read')
+    if (state.options.compact) notes.push('全文用 session_links action=read')
+    if (state.options.quiet) {
+      const group = groupOf(sourceSessionId)
+      const leader = group ? leaderOf(group) : null
+      const reportTo = leader && leader !== sourceSessionId ? '用 session_links action=send 把结论报给组长' : '把结论用一句话说清'
+      notes.push(
+        '组内同步·静默执行：不需要回复正文，处理完即可。只有两种情况才输出文字——①失败或严重错误需说明原因；②用户在本会话里直接插话提问。其余情况' +
+          reportTo +
+          '（结论 + 产出路径，两行以内）',
+      )
+    } else if (state.options.compact) {
       notes.push('组内同步，非你执行的任务就一句话确认')
     }
     const tail = notes.length ? '\n（' + notes.join('；') + '）' : ''
@@ -1150,6 +1164,17 @@ export function apply(ctx) {
           '（2）任务有前后依赖、需要多个会话接力完成时，用 mode=order：各会话提交执行顺序，互相查看后投票确定顺序。',
           '投票重在高速度而非精细：直接给结论，不写长文、不调用其它工具。投票结果会自动通知全组，被选中的会话按结果执行。',
         )
+        if (state.options.quiet) {
+          lines.push(
+            '静默执行（默认开启，省内存与上下文）：组内同步来的消息不需要长篇回复。只有两种情况要输出文字——① 任务失败或出现严重错误，需说明原因；② 用户在本会话里直接插话提问。其余情况处理完即可：' +
+              (leader && leader !== sessionId
+                ? '用 session_links action=send 把结论 + 产出路径报给组长，两行以内；'
+                : leader === sessionId
+                  ? '把结论用一句话说清即可；'
+                  : '把结论用一句话说清即可；') +
+              '不要复述任务、不要贴代码、不要写总结段落。',
+          )
+        }
         return lines.join('\n')
       },
     }),

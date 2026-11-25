@@ -421,7 +421,7 @@ window.__ModuleLoader__.load({
       const snap = useSnapshot()
       const panel = usePanel()
       const dragRef = React.useRef(null)
-      const options = snap.options || { compact: true, maxChars: 1200, dedupeMs: 8000 }
+      const options = snap.options || { compact: true, maxChars: 1200, dedupeMs: 8000, quiet: true }
       const stats = snap.stats || null
       const [maxCharsText, setMaxCharsText] = React.useState(String(options.maxChars))
       const [query, setQuery] = React.useState('')
@@ -865,6 +865,26 @@ window.__ModuleLoader__.load({
                 onChange: (event) => void saveOptions({ dedupeMs: event.target.checked ? 8000 : 0 }),
               }),
               '跳过重复（8 秒内相同内容只转一次）',
+            ),
+            h(
+              'label',
+              { style: { display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 12, marginBottom: 4, cursor: 'pointer' } },
+              h('input', {
+                type: 'checkbox',
+                checked: options.quiet !== false,
+                onChange: (event) => void saveOptions({ quiet: event.target.checked }),
+                style: { marginTop: 2 },
+              }),
+              h(
+                'span',
+                null,
+                '静默执行（组内消息不必回复正文，结果只报组长）',
+                h(
+                  'span',
+                  { style: { display: 'block', fontSize: 11, color: 'var(--dsw-alias-label-secondary)' } },
+                  '只有失败/严重错误、或用户在当前会话插话时才输出文字',
+                ),
+              ),
             ),
             stats
               ? h(
