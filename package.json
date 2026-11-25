@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-links",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "DeepSeek Harness 插件：把多个会话连接成协作小组 —— 消息同步、组内投票、小组长、会话颜色、上下文节能",
   "type": "module",
   "license": "MIT",

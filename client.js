@@ -14,7 +14,7 @@ window.__ModuleLoader__.load({
       listeners: new Set(),
       timer: null,
       picker: { open: false, sessionId: null, x: 0, y: 0 },
-      panel: { open: false, sessionId: null, selected: [], name: '', busy: false, message: '', pos: null, announceText: '' },
+      panel: { open: false, sessionId: null, selected: [], name: '', busy: false, message: '', pos: null, announceText: '', editingGroupId: null },
       notify() {
         const value = store.snapshot
         for (const listener of Array.from(store.listeners)) listener(value)
@@ -301,21 +301,54 @@ window.__ModuleLoader__.load({
         bottom: 24,
         width: 340,
         maxHeight: '70vh',
-        overflow: 'auto',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
         pointerEvents: 'auto',
         borderRadius: 14,
         border: '1px solid var(--dsw-alias-border-l1)',
         background: 'var(--dsw-alias-bg-layer-1)',
         boxShadow: '0 12px 40px rgba(0,0,0,0.28)',
-        padding: 14,
         color: 'var(--dsw-alias-label-primary)',
         fontSize: 13,
+      },
+      body: {
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        flex: 1,
+        minHeight: 0,
+        padding: '0 14px 14px 14px',
       },
       head: {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        marginBottom: 10,
+        padding: '12px 14px 8px 14px',
+        flexShrink: 0,
+        background: 'var(--dsw-alias-bg-layer-1)',
+        borderBottom: '1px solid var(--dsw-alias-border-l1)',
+      },
+      search: {
+        width: '100%',
+        height: 28,
+        borderRadius: 8,
+        border: '1px solid var(--dsw-alias-border-l1)',
+        background: 'var(--dsw-alias-bg-base)',
+        color: 'var(--dsw-alias-label-primary)',
+        padding: '0 8px',
+        fontSize: 12,
+        boxSizing: 'border-box',
+        marginBottom: 8,
+      },
+      groupRow: {
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 8,
+        padding: '7px 8px',
+        borderRadius: 8,
+        border: '1px solid var(--dsw-alias-border-l1)',
+        marginBottom: 6,
+        cursor: 'pointer',
       },
       title: { fontSize: 14, fontWeight: 600 },
       row: {
@@ -391,6 +424,7 @@ window.__ModuleLoader__.load({
       const options = snap.options || { compact: true, maxChars: 1200, dedupeMs: 8000 }
       const stats = snap.stats || null
       const [maxCharsText, setMaxCharsText] = React.useState(String(options.maxChars))
+      const [query, setQuery] = React.useState('')
       React.useEffect(() => {
         setMaxCharsText(String(options.maxChars))
       }, [options.maxChars])
@@ -417,7 +451,16 @@ window.__ModuleLoader__.load({
         void saveOptions({ maxChars: Math.round(value) })
       }
 
-      const candidates = snap.sessions.filter((item) => !item.blank || item.running)
+      const editing = panel.editingGroupId
+        ? snap.groups.find((group) => group.id === panel.editingGroupId) || null
+        : null
+      const keyword = query.trim().toLowerCase()
+      const candidates = snap.sessions.filter((item) => {
+        if (item.blank && !item.running) return false
+        if (!keyword) return true
+        const title = sessionTitle(snap, item.sessionId) || ''
+        return title.toLowerCase().includes(keyword) || item.sessionId.toLowerCase().includes(keyword)
+      })
       const selected = panel.selected || []
 
       function startDrag(event) {
@@ -460,8 +503,16 @@ window.__ModuleLoader__.load({
         : styles.card
 
       function toggle(sessionId) {
-        const next = selected.includes(sessionId) ? selected.filter((id) => id !== sessionId) : selected.concat(sessionId)
-        store.patchPanel({ selected: next })
+        const checked = selected.includes(sessionId)
+        const next = checked ? selected.filter((id) => id !== sessionId) : selected.concat(sessionId)
+        let message = ''
+        if (!checked) {
+          const owner = groupOf(snap, sessionId)
+          if (owner && owner.id !== (editing && editing.id)) {
+            message = '「' + sessionTitle(snap, sessionId) + '」会从「' + owner.name + '」移出（保存后生效）'
+          }
+        }
+        store.patchPanel({ selected: next, message })
       }
 
       async function connect() {
@@ -470,8 +521,20 @@ window.__ModuleLoader__.load({
           return
         }
         store.patchPanel({ busy: true, message: '' })
-        const value = await post('connect', { sessionIds: selected, name: panel.name })
-        store.patchPanel({ busy: false, message: value && value.ok ? '已连接' : (value && value.error) || '连接失败' })
+        const payload = { sessionIds: selected, name: panel.name }
+        if (panel.editingGroupId) payload.groupId = panel.editingGroupId
+        const value = await post('connect', payload)
+        const removed = value && Array.isArray(value.removedFrom) ? value.removedFrom : []
+        const groupId = value && value.group && value.group.id ? value.group.id : panel.editingGroupId || null
+        store.patchPanel({
+          busy: false,
+          editingGroupId: value && value.ok ? groupId : panel.editingGroupId || null,
+          message: value && value.ok
+            ? (panel.editingGroupId ? '已保存该组的成员' : '已新建连接组') +
+              (removed.length ? '；已从「' + removed.join('」「') + '」移出' : '')
+            : (value && value.error) || '连接失败',
+        })
+        void store.refresh()
       }
 
       async function disconnect() {
@@ -479,12 +542,20 @@ window.__ModuleLoader__.load({
         store.patchPanel({ busy: true, message: '' })
         await post('disconnect', { sessionId: panel.sessionId })
         store.patchPanel({ busy: false, selected: [], message: '已断开当前会话' })
+        void store.refresh()
       }
 
       async function dissolve(groupId) {
         store.patchPanel({ busy: true })
         await post('dissolve', { groupId })
-        store.patchPanel({ busy: false, message: '已解散连接组' })
+        const patch = { busy: false, message: '已解散连接组' }
+        if (panel.editingGroupId === groupId) {
+          patch.editingGroupId = null
+          patch.selected = []
+          patch.name = ''
+        }
+        store.patchPanel(patch)
+        void store.refresh()
       }
 
       async function setLeader(groupId, leaderSessionId) {
@@ -542,7 +613,7 @@ window.__ModuleLoader__.load({
               group && group.leader === item.sessionId ? ' · ★组长' : '',
             ),
           ),
-          group
+          group && (!panel.editingGroupId || panel.editingGroupId === group.id)
             ? h(
                 'button',
                 {
@@ -561,41 +632,47 @@ window.__ModuleLoader__.load({
         )
       })
 
-      const groups = snap.groups.map((group) =>
-        h(
+      const groups = snap.groups.map((group) => {
+        const active = !!(editing && editing.id === group.id)
+        return h(
           'div',
-          { key: group.id, style: { ...styles.row, cursor: 'default', alignItems: 'flex-start' } },
+          {
+            key: group.id,
+            style: {
+              ...styles.groupRow,
+              borderColor: active ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l1)',
+            },
+            title: '点击编辑这一组的成员',
+            onClick: () =>
+              store.patchPanel({
+                editingGroupId: group.id,
+                selected: group.sessions.slice(),
+                name: group.name,
+                message: '正在编辑「' + group.name + '」',
+              }),
+          },
           h(ChainIcon, { size: 13 }),
           h(
             'div',
             { style: { display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 } },
-            h('span', { style: { fontWeight: 600 } }, group.name),
-            h(
-              'span',
-              { style: styles.sub },
-              group.sessions.map((id) => sessionTitle(snap, id)).join('、'),
-            ),
-            group.leader
-              ? h('span', { style: styles.sub }, '组长：' + sessionTitle(snap, group.leader))
-              : h('span', { style: styles.sub }, '尚未任命组长'),
+            h('span', { style: { fontWeight: 600 } }, group.name + (active ? ' · 编辑中' : '')),
+            h('span', { style: styles.sub }, group.sessions.map((id) => sessionTitle(snap, id)).join('、')),
+            h('span', { style: styles.sub }, group.leader ? '组长：' + sessionTitle(snap, group.leader) : '尚未任命组长'),
           ),
           h(
-            'div',
-            { style: { display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' } },
-            h(
-              'button',
-              {
-                type: 'button',
-                style: { ...styles.ghost, height: 26, padding: '0 8px' },
-                title: '把这一组的成员和组名载入上面的选择区',
-                onClick: () => store.patchPanel({ selected: group.sessions.slice(), name: group.name, message: '' }),
+            'button',
+            {
+              type: 'button',
+              style: { ...styles.danger, flexShrink: 0 },
+              onClick: (event) => {
+                event.stopPropagation()
+                void dissolve(group.id)
               },
-              '载入',
-            ),
-            h('button', { type: 'button', style: styles.danger, onClick: () => void dissolve(group.id) }, '解散'),
+            },
+            '解散',
           ),
-        ),
-      )
+        )
+      })
 
       const latestVote = Array.isArray(snap.votes) && snap.votes.length ? snap.votes[snap.votes.length - 1] : null
 
@@ -607,52 +684,72 @@ window.__ModuleLoader__.load({
           { style: cardStyle },
           h(
             'div',
-            {
-              style: { ...styles.head, cursor: 'grab', userSelect: 'none' },
-              onMouseDown: startDrag,
-              title: '按住拖动面板',
-            },
+            { style: { ...styles.head, cursor: 'grab', userSelect: 'none' }, onMouseDown: startDrag, title: '按住拖动面板' },
             h('span', { style: styles.title }, '连接会话'),
             h('button', { type: 'button', style: styles.close, title: '关闭', onClick: () => store.patchPanel({ open: false }) }, '×'),
           ),
           h(
             'div',
-            { style: styles.sub },
-            panel.sessionId ? '当前会话：' + sessionTitle(snap, panel.sessionId) : '选择要连接到一起的会话',
-          ),
-          panel.message ? h('div', { style: styles.message }, panel.message) : null,
-          h('div', { style: styles.section }, '连接组名称'),
-          h('input', {
-            style: styles.input,
-            value: panel.name,
-            placeholder: '可选，例如「前端重构」',
-            onChange: (event) => store.patchPanel({ name: event.target.value }),
-          }),
-          h(
-            'div',
-            { style: { display: 'flex', gap: 8, marginBottom: 6 } },
+            { style: styles.body },
             h(
-              'button',
-              { type: 'button', style: styles.primary, disabled: panel.busy, onClick: () => void connect() },
-              panel.busy ? '处理中…' : '连接所选会话',
+              'div',
+              { style: { ...styles.sub, marginTop: 10 } },
+              panel.sessionId ? '当前会话：' + sessionTitle(snap, panel.sessionId) : '选择要连接到一起的会话',
             ),
-            panel.sessionId
-              ? h('button', { type: 'button', style: styles.ghost, disabled: panel.busy, onClick: () => void disconnect() }, '断开当前会话')
-              : null,
-          ),
-          h(
-            'div',
-            { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
-            h('div', { style: styles.section }, '选择会话（' + selected.length + ' 个已选）'),
-            selected.length
-              ? h(
-                  'button',
-                  { type: 'button', style: { ...styles.ghost, height: 22, padding: '0 8px' }, onClick: () => store.patchPanel({ selected: [] }) },
-                  '清空',
-                )
-              : null,
-          ),
-          rows.length ? rows : h('div', { style: styles.sub }, '没有可选会话'),
+            panel.message ? h('div', { style: styles.message }, panel.message) : null,
+            h(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 11 } },
+              h('div', { style: { ...styles.section, marginTop: 0 } }, '现有连接组（' + snap.groups.length + '）'),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  style: { ...styles.ghost, height: 22, padding: '0 8px' },
+                  onClick: () => store.patchPanel({ editingGroupId: null, selected: [], name: '', message: '新建连接组：勾选会话后点下面的按钮' }),
+                },
+                '新建',
+              ),
+            ),
+            groups.length ? groups : h('div', { style: styles.sub }, '还没有连接组'),
+            h('div', { style: { ...styles.section, marginTop: 10 } }, editing ? '编辑「' + editing.name + '」' : '连接组名称'),
+            h('input', {
+              style: styles.input,
+              value: panel.name,
+              placeholder: '可选，例如「前端重构」',
+              onChange: (event) => store.patchPanel({ name: event.target.value }),
+            }),
+            h(
+              'div',
+              { style: { display: 'flex', gap: 8, marginBottom: 6 } },
+              h(
+                'button',
+                { type: 'button', style: styles.primary, disabled: panel.busy, onClick: () => void connect() },
+                panel.busy ? '处理中…' : editing ? '保存该组成员' : '新建连接组',
+              ),
+              panel.sessionId
+                ? h('button', { type: 'button', style: styles.ghost, disabled: panel.busy, onClick: () => void disconnect() }, '断开当前会话')
+                : null,
+            ),
+            h(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+              h('div', { style: styles.section }, '选择会话（' + selected.length + ' 个已选）'),
+              selected.length
+                ? h(
+                    'button',
+                    { type: 'button', style: { ...styles.ghost, height: 22, padding: '0 8px' }, onClick: () => store.patchPanel({ selected: [] }) },
+                    '清空',
+                  )
+                : null,
+            ),
+            h('input', {
+              style: styles.search,
+              value: query,
+              placeholder: '搜索会话名称或 id',
+              onChange: (event) => setQuery(event.target.value),
+            }),
+            rows.length ? rows : h('div', { style: styles.sub }, keyword ? '没有匹配的会话' : '没有可选会话'),
           h(
             'div',
             { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 } },
@@ -778,8 +875,6 @@ window.__ModuleLoader__.load({
                 )
               : null,
           ),
-          h('div', { style: styles.section }, '现有连接组（' + snap.groups.length + '）'),
-          groups.length ? groups : h('div', { style: styles.sub }, '还没有连接组'),
           latestVote
             ? h(
                 'div',
@@ -820,15 +915,16 @@ window.__ModuleLoader__.load({
                 { style: { ...styles.sub, marginTop: 6, lineHeight: 1.6 } },
                 '会话自决策：在会话里交办任务时，组内会自动发起投票（选执行者 / 排执行顺序），这里显示最近一次结果。',
               ),
-          h(
-            'div',
-            { style: { ...styles.sub, marginTop: 8, lineHeight: 1.6 } },
-            '连接后，你发送的每条消息会同时送达组内所有会话；各会话共享同一工作目录，产物可互相查看与修改。',
-          ),
-          h(
-            'div',
-            { style: { ...styles.sub, marginTop: 6, lineHeight: 1.6 } },
-            '可以同时存在多个连接组，彼此互不影响；同一个会话只属于一个组，所以选了已在别的组里的会话会与那个组合并，想另建新组请改选其他会话。',
+            h(
+              'div',
+              { style: { ...styles.sub, marginTop: 8, lineHeight: 1.6 } },
+              '连接后，你发送的每条消息会同时送达组内所有会话；各会话共享同一工作目录，产物可互相查看与修改。',
+            ),
+            h(
+              'div',
+              { style: { ...styles.sub, marginTop: 6, lineHeight: 1.6 } },
+              '可以同时存在多个连接组；同一个会话只属于一个组 —— 把会话勾进这一组就会从原来的组移出（不足两人自动散伙）。点上面的组可以编辑它的成员。',
+            ),
           ),
         ),
       )

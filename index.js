@@ -836,25 +836,49 @@ export function apply(ctx) {
 
   // ---------- 组操作 ----------
 
-  function connect(sessionIds, name) {
+  // 勾选集就是目标组的最终成员：不再做「有交集就合并」，取消勾选即为移出。
+  // 一个会话只属于一个组（互斥）：勾选的会话会从其他组里摘掉，其他组不足 2 人则自动散伙。
+  function connect(sessionIds, name, groupId) {
     const ids = Array.from(new Set((Array.isArray(sessionIds) ? sessionIds : []).filter((id) => typeof id === 'string' && id)))
     if (ids.length < 2) return { ok: false, error: '至少需要选择两个会话才能连接' }
-    const affected = state.groups.filter((group) => group.sessions.some((id) => ids.includes(id)))
-    const merged = Array.from(new Set([...affected.flatMap((group) => group.sessions), ...ids]))
-    state.groups = state.groups.filter((group) => !affected.includes(group))
-    const inheritedLeader = affected
-      .map((item) => leaderOf(item))
-      .find((id) => id && merged.includes(id)) || null
+    const target = typeof groupId === 'string' && groupId
+      ? state.groups.find((item) => item.id === groupId) || null
+      : null
+    if (typeof groupId === 'string' && groupId && !target) {
+      return { ok: false, error: '要编辑的连接组不存在（可能已被解散），请重新选择' }
+    }
+
+    const removedFrom = []
+    for (const group of state.groups) {
+      if (target && group.id === target.id) continue
+      const kept = group.sessions.filter((id) => !ids.includes(id))
+      if (kept.length !== group.sessions.length) {
+        removedFrom.push(group.name)
+        group.sessions = kept
+        if (group.leader && !kept.includes(group.leader)) group.leader = null
+      }
+    }
+    state.groups = state.groups.filter((group) => (target && group.id === target.id) || group.sessions.length >= 2)
+
+    if (target) {
+      target.sessions = ids.slice()
+      if (target.leader && !ids.includes(target.leader)) target.leader = null
+      if (typeof name === 'string' && name.trim()) target.name = name.trim()
+      else if (!target.name) target.name = '连接组 ' + (state.groups.length + 1)
+      scheduleSave()
+      return { ok: true, group: target, groups: state.groups, removedFrom }
+    }
+
     const group = {
       id: crypto.randomUUID(),
-      name: (typeof name === 'string' && name.trim()) || (affected[0] && affected[0].name) || '连接组 ' + (state.groups.length + 1),
+      name: (typeof name === 'string' && name.trim()) || '连接组 ' + (state.groups.length + 1),
       createdAt: Date.now(),
-      sessions: merged,
-      leader: inheritedLeader,
+      sessions: ids.slice(),
+      leader: null,
     }
     state.groups.push(group)
     scheduleSave()
-    return { ok: true, group, groups: state.groups }
+    return { ok: true, group, groups: state.groups, removedFrom }
   }
 
   function disconnect(sessionId) {
@@ -957,7 +981,7 @@ export function apply(ctx) {
       }
       const body = await readBody(req)
       if (route === 'connect') {
-        sendJson(res, 200, connect(body.sessionIds, body.name))
+        sendJson(res, 200, connect(body.sessionIds, body.name, body.groupId))
         return
       }
       if (route === 'disconnect') {
