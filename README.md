@@ -4,6 +4,8 @@ DeepSeek Harness 的「会话连接」插件。
 
 Harness 自带「分岔会话」——把一个对话复制成两份。这个插件做的是相反的事：**把多个会话连接成一个协作小组**，让它们共享同一条用户消息、共享同一个工作目录，并且能互相派活、投票决策、通报进展。
 
+> **下载安装**：打好的包在 [Releases](https://github.com/NCT-Ant/dsh-session-links/releases/latest) 里，文件名形如 `dsh-session-links-1.0.0.zip`（内含 `index.js`、`client.js`、`cordis.patch.yml`、`package.json`、`README.md`、`LICENSE`）。解压到一个目录后，在 Harness 的插件管理器里把**那个目录**当作本地 bundle 安装；装完按一次 `Ctrl+R` 刷新界面，标题栏才会出现「连接会话」按钮。
+
 ## 功能一览
 
 | 功能 | 说明 |
